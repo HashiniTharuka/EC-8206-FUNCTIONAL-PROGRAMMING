@@ -1,0 +1,12 @@
+cabal-version:      2.4
+name:               EC8206
+version:            0.1.0.0
+build-type:         Simple
+
+executable expr-demo
+    main-is:          Main.hs
+    other-modules:    Expr
+    hs-source-dirs:   src
+    build-depends:    base
+    default-language: Haskell2010
+    ghc-options:      -Wall
