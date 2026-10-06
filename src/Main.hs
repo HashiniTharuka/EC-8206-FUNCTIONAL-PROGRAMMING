@@ -9,13 +9,17 @@ import Expr
   , BExpr (..)
   , Env
   , eval
+  , pretty
   , simplify
+  , freeVars
+  , depth
+  , substitute
   , evalBatch
   , batchSummary
   )
 
 -- --------------------------------------------------------------------------
--- Test harness
+-- Part B test harness
 -- --------------------------------------------------------------------------
 
 -- | A labelled test case: expression, environment, and expected result.
@@ -82,7 +86,7 @@ runCase c =
   in ( ok
      , unlines
          [ status ++ "  " ++ label c
-         , "    expression : " ++ show (expr c)
+         , "    pretty     : " ++ pretty (expr c)   -- <-- now shows infix form
          , "    env        : " ++ show (env c)
          , "    expected   : " ++ show (expected c)
          , "    actual     : " ++ show actual
@@ -90,17 +94,59 @@ runCase c =
      )
 
 -- --------------------------------------------------------------------------
--- simplify demos  (simplify :: Expr -> Expr, so output uses Expr constructors)
+-- Part C: simplify demos
 -- --------------------------------------------------------------------------
 
 simplifyDemos :: [(String, Expr)]
 simplifyDemos =
-  [ ("x + 0",              Add (Var "x") (Lit 0))
-  , ("0 + x",              Add (Lit 0) (Var "x"))
-  , ("x * 1",              Mul (Var "x") (Lit 1))
-  , ("x * 0",              Mul (Var "x") (Lit 0))
-  , ("(x + 0) * 1",        Mul (Add (Var "x") (Lit 0)) (Lit 1))
-  , ("if True then x else y", If (BLit True) (Var "x") (Var "y"))
+  [ ("x + 0",                   Add (Var "x") (Lit 0))
+  , ("0 + x",                   Add (Lit 0) (Var "x"))
+  , ("x * 1",                   Mul (Var "x") (Lit 1))
+  , ("x * 0",                   Mul (Var "x") (Lit 0))
+  , ("(x + 0) * 1",             Mul (Add (Var "x") (Lit 0)) (Lit 1))
+  , ("if True then x else y",   If (BLit True) (Var "x") (Var "y"))
+  , ("3 + 4  (constant fold)",  Add (Lit 3) (Lit 4))
+  , ("2 * (5 - 5) (fold+zero)", Mul (Lit 2) (Sub (Lit 5) (Lit 5)))
+  ]
+
+-- --------------------------------------------------------------------------
+-- Pretty-printer demos
+-- --------------------------------------------------------------------------
+
+prettyDemos :: [(String, Expr)]
+prettyDemos =
+  [ ("(x+3)*2",             Mul (Add (Var "x") (Lit 3)) (Lit 2))
+  , ("a - (b - c)",         Sub (Var "a") (Sub (Var "b") (Var "c")))
+  , ("let x=5 in x*x",      Let "x" (Lit 5) (Mul (Var "x") (Var "x")))
+  , ("if x>0 then x else -x"
+    , If (Gt (Var "x") (Lit 0)) (Var "x") (Sub (Lit 0) (Var "x")))
+  ]
+
+-- --------------------------------------------------------------------------
+-- Free-variable demos
+-- --------------------------------------------------------------------------
+
+freeVarDemos :: [(String, Expr)]
+freeVarDemos =
+  [ ("x + y",               Add (Var "x") (Var "y"))
+  , ("let x=1 in x+y",      Let "x" (Lit 1) (Add (Var "x") (Var "y")))
+  , ("let x=y in x+z",      Let "x" (Var "y") (Add (Var "x") (Var "z")))
+  , ("if x>0 then y else z" , If (Gt (Var "x") (Lit 0)) (Var "y") (Var "z"))
+  ]
+
+-- --------------------------------------------------------------------------
+-- Substitution demos
+-- --------------------------------------------------------------------------
+
+substDemos :: [(String, String, Expr, Expr)]
+--            label     var  replacement  target-expression
+substDemos =
+  [ ( "x |-> 5  in  x + y"
+    , "x", Lit 5, Add (Var "x") (Var "y") )
+  , ( "x |-> 5  in  let x=1 in x  (shadowed, body unchanged)"
+    , "x", Lit 5, Let "x" (Lit 1) (Var "x") )
+  , ( "x |-> y+1  in  x*x"
+    , "x", Add (Var "y") (Lit 1), Mul (Var "x") (Var "x") )
   ]
 
 -- --------------------------------------------------------------------------
@@ -109,30 +155,70 @@ simplifyDemos =
 
 main :: IO ()
 main = do
-  putStrLn "=== Part B: eval sample evaluations (expected vs actual) ==="
+  -- ------------------------------------------------------------------ Part B
+  putStrLn "=== Part B: eval - expected vs actual (with pretty-printed expr) ==="
   results <- mapM (\c -> putStr (snd (runCase c)) >> pure (fst (runCase c))) cases
   let passed = length (filter id results)
   putStrLn (show passed ++ " / " ++ show (length cases) ++ " cases passed")
 
-  putStrLn "\n=== Part C: simplify demos (Expr -> Expr, no SimpExpr) ==="
+  -- ------------------------------------------------------- Part C: simplify
+  putStrLn "\n=== Part C: simplify (algebraic identities + constant folding) ==="
   mapM_
     (\(descr, e) ->
-        putStrLn (descr ++ "  ==>  " ++ show (simplify e)))
+        putStrLn ("  " ++ descr
+               ++ "\n    before : " ++ pretty e
+               ++ "\n    after  : " ++ pretty (simplify e)))
     simplifyDemos
 
-  putStrLn "\n=== Part C: batch evaluation (map/filter) + summary (foldr) ==="
+  -- --------------------------------------------------- Part C: batch + fold
+  putStrLn "\n=== Part C: batch evaluation (curried map) + summary (foldr) ==="
   let sharedEnv = [("x", 10), ("y", 0)]
       batch =
-        [ Add (Var "x") (Lit 5)   -- succeeds: 15.0
-        , Div (Lit 1) (Var "y")   -- fails: division by zero
-        , Var "z"                 -- fails: undefined variable
-        , Mul (Var "x") (Var "x") -- succeeds: 100.0
+        [ Add (Var "x") (Lit 5)    -- succeeds: 15.0
+        , Div (Lit 1) (Var "y")    -- fails:    division by zero
+        , Var "z"                  -- fails:    undefined variable
+        , Mul (Var "x") (Var "x")  -- succeeds: 100.0
         ]
-      -- Partial application: `eval sharedEnv` is a curried, reusable
-      -- function of type `Expr -> Either String Double`.
+      -- Partial application: `eval sharedEnv` :: Expr -> Either String Double
       evalShared = eval sharedEnv
-  putStrLn ("individual results : " ++ show (map evalShared batch))
-  putStrLn ("evalBatch (successes only) : " ++ show (evalBatch sharedEnv batch))
+  putStrLn   ("  individual results    : " ++ show (map evalShared batch))
+  putStrLn   ("  evalBatch (successes) : " ++ show (evalBatch sharedEnv batch))
   let (successes, failures) = batchSummary sharedEnv batch
-  putStrLn ("batchSummary : " ++ show successes ++ " succeeded, "
-            ++ show failures ++ " failed")
+  putStrLn   ("  batchSummary          : " ++ show successes
+           ++ " succeeded, " ++ show failures ++ " failed")
+
+  -- ------------------------------------------------ Supplementary: pretty
+  putStrLn "\n=== Supplementary: pretty-printer (infix, minimal parens) ==="
+  mapM_
+    (\(descr, e) ->
+        putStrLn ("  " ++ descr ++ "  ==>  " ++ pretty e))
+    prettyDemos
+
+  -- --------------------------------------------- Supplementary: freeVars
+  putStrLn "\n=== Supplementary: free variable analysis ==="
+  mapM_
+    (\(descr, e) ->
+        putStrLn ("  freeVars (" ++ descr ++ ")  ==>  " ++ show (freeVars e)))
+    freeVarDemos
+
+  -- ---------------------------------------------- Supplementary: depth
+  putStrLn "\n=== Supplementary: expression tree depth ==="
+  let depthDemos =
+        [ ("Lit 42",                Lit 42)
+        , ("x + 3",                 Add (Var "x") (Lit 3))
+        , ("(x+3)*2",               Mul (Add (Var "x") (Lit 3)) (Lit 2))
+        , ("let x=5 in x*x",        Let "x" (Lit 5) (Mul (Var "x") (Var "x")))
+        ]
+  mapM_
+    (\(descr, e) ->
+        putStrLn ("  depth (" ++ descr ++ ")  ==>  " ++ show (depth e)))
+    depthDemos
+
+  -- ------------------------------------------ Supplementary: substitute
+  putStrLn "\n=== Supplementary: capture-avoiding substitution ==="
+  mapM_
+    (\(descr, x, s, e) ->
+        let result = substitute x s e
+        in putStrLn ("  " ++ descr
+                  ++ "\n    result : " ++ pretty result))
+    substDemos

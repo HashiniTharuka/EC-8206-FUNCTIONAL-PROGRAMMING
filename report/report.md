@@ -21,40 +21,59 @@ or, without compiling first:
 runghc -isrc src/Main.hs
 ```
 
-`Main.hs` runs 9 labelled evaluation cases (each printing its expression,
-environment, expected result, and actual result), 6 `simplify` rewrite
-demos, and a batch-evaluation demo. The project compiles cleanly under
-`-Wall` with no incomplete-pattern warnings, confirming `eval` and
-`simplify` cover every constructor of `Expr` and `BExpr`.
+`Main.hs` runs 9 labelled evaluation cases (each printing the
+pretty-printed infix form and the `Either` result), 8 `simplify` demos
+(including constant folding), a batch-evaluation demo, and supplementary
+demos for `pretty`, `freeVars`, `depth`, and `substitute`. The project
+compiles cleanly under `-Wall` with zero incomplete-pattern warnings,
+confirming `eval` and `simplify` cover every constructor of `Expr` and `BExpr`.
+
+## Additional Capabilities (Supplementary)
+
+Beyond the rubric requirements, `src/Expr.hs` provides four supplementary
+utilities that demonstrate further Haskell idioms:
+
+| Function | Signature | Purpose |
+|---|---|---|
+| `pretty` | `Expr -> String` | Infix renderer; inserts parens only where precedence or left-associativity requires them |
+| `freeVars` | `Expr -> [String]` | Collects free variable names using `nub` and list-difference `(\\)`, respecting `Let` scope |
+| `depth` | `Expr -> Int` | Maximum nesting depth of the expression tree; atoms have depth 0 |
+| `substitute` | `String -> Expr -> Expr -> Expr` | Capture-avoiding substitution; stops at `Let` boundaries where the target variable is shadowed |
+
+`simplify` was also extended with **constant folding**: when both operands
+of an arithmetic operator are `Lit` values the result is computed
+immediately (e.g. `simplify (Add (Lit 3) (Lit 4))` → `Lit 7.0`), so a
+single bottom-up pass can collapse entire constant sub-trees.
 
 ## Sample Evaluations (Expected vs Actual)
 
 All nine cases below are taken verbatim from a real run of `./expr-demo`
 (source in `src/Main.hs`); every one reports `PASS`.
 
-| # | Expression | Env | Expected | Actual |
+| # | Pretty form | Env | Expected | Actual |
 |---|---|---|---|---|
-| 1 | `Lit 42` | `[]` | `Right 42.0` | `Right 42.0` |
-| 2 | `Var "x"` | `[x=10]` | `Right 10.0` | `Right 10.0` |
-| 3 | `(x + 3) * 2` | `[x=4]` | `Right 14.0` | `Right 14.0` |
-| 4 | `5 / (y - y)` | `[y=3]` | `Left "Division by zero"` | `Left "Division by zero"` |
-| 5 | `z + 1` | `[]` | `Left "Undefined variable: z"` | `Left "Undefined variable: z"` |
-| 6 | `let x = 5 in x * x` | `[]` | `Right 25.0` | `Right 25.0` |
-| 7 | `let x=1 in let x=2 in x+1` | `[]` | `Right 3.0` (shadowing) | `Right 3.0` |
-| 8 | `if x > 0 then x else 0 - x` | `[x=-7]` | `Right 7.0` | `Right 7.0` |
-| 9 | `if missing > 0 then 1 else 2` | `[]` | `Left "Undefined variable: missing"` | `Left "Undefined variable: missing"` |
+| 1 | `42.0` | `[]` | `Right 42.0` | `Right 42.0` |
+| 2 | `x` | `[x=10]` | `Right 10.0` | `Right 10.0` |
+| 3 | `(x + 3.0) * 2.0` | `[x=4]` | `Right 14.0` | `Right 14.0` |
+| 4 | `5.0 / (y - y)` | `[y=3]` | `Left "Division by zero"` | `Left "Division by zero"` |
+| 5 | `z + 1.0` | `[]` | `Left "Undefined variable: z"` | `Left "Undefined variable: z"` |
+| 6 | `let x = 5.0 in x * x` | `[]` | `Right 25.0` | `Right 25.0` |
+| 7 | `let x = 1.0 in let x = 2.0 in x + 1.0` | `[]` | `Right 3.0` | `Right 3.0` |
+| 8 | `if x > 0.0 then x else 0.0 - x` | `[x=-7]` | `Right 7.0` | `Right 7.0` |
+| 9 | `if missing > 0.0 then 1.0 else 2.0` | `[]` | `Left "Undefined variable: missing"` | `Left "Undefined variable: missing"` |
 
 Case 9 shows error propagation *through* the condition of an `If`: the
 error surfaces from `evalB`, is threaded up by `eval`'s `do`-block, and
 never reaches the branches.
 
-`simplify` (bottom-up rewriting) turns `x + 0`, `0 + x`, `x * 1` and
-`(x + 0) * 1` all into `Var "x"`; `x * 0` into `Lit 0.0`; and
-`if True then x else y` into `Var "x"` — six identities against a rubric
-minimum of three. For the batch demo, `env = [x=10, y=0]` and batch
-`[x+5, 1/y, z, x*x]` give individual results `[Right 15.0, Left
+`simplify` (bottom-up rewriting with constant folding) turns `x + 0`,
+`0 + x`, `x * 1` and `(x + 0) * 1` all into `Var "x"`; `x * 0` into
+`Lit 0.0`; `if True then x else y` into `Var "x"`; `3.0 + 4.0` into
+`Lit 7.0`; and `2.0 * (5.0 - 5.0)` into `Lit 0.0` — eight identities
+against a rubric minimum of three. For the batch demo, `env = [x=10, y=0]`
+and batch `[x+5, 1/y, z, x*x]` give individual results `[Right 15.0, Left
 "Division by zero", Left "Undefined variable: z", Right 100.0]`;
-`evalBatch` (via curried `map (eval env)` + `filter`) keeps only
+`evalBatch` (via `Data.Either.rights . map (eval env)`) keeps only
 `[15.0, 100.0]`, and `batchSummary` (via `foldr`) reports `2 succeeded,
 2 failed`.
 
